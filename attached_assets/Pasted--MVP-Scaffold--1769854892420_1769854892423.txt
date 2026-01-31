@@ -1,0 +1,215 @@
+سنبني هيكل مشروع MVP فعلي لأداة تحديد أقرب صراف + تبليغ حالة.
+سأعطيك Scaffold كامل قابل للبدء فورًا:
+
+📱 تطبيق موبايل: React Native (Expo) — أسرع إطلاق
+
+⚙️ Backend: Node.js + Express
+
+🗄️ قاعدة بيانات: PostgreSQL
+
+🗺️ مصدر بيانات: OpenStreetMap Overpass
+
+🔌 API داخلي واضح
+
+لا زخرفة. فقط أساس عملي قابل للتشغيل. ⚙️
+
+🧱 هيكل المشروع
+cash-radar/
+ ├── mobile/
+ ├── backend/
+ └── docs/
+
+📱 أولًا — مشروع الموبايل (Expo React Native)
+إنشاء المشروع
+npx create-expo-app mobile
+cd mobile
+npm install axios react-native-maps expo-location
+
+mobile/App.js
+import React, { useEffect, useState } from "react";
+import { View, Text, StyleSheet, ActivityIndicator } from "react-native";
+import MapView, { Marker } from "react-native-maps";
+import * as Location from "expo-location";
+import axios from "axios";
+
+export default function App() {
+  const [region, setRegion] = useState(null);
+  const [atms, setAtms] = useState([]);
+
+  useEffect(() => {
+    init();
+  }, []);
+
+  async function init() {
+    const { status } = await Location.requestForegroundPermissionsAsync();
+    if (status !== "granted") return;
+
+    const loc = await Location.getCurrentPositionAsync({});
+    const r = {
+      latitude: loc.coords.latitude,
+      longitude: loc.coords.longitude,
+      latitudeDelta: 0.02,
+      longitudeDelta: 0.02,
+    };
+    setRegion(r);
+
+    loadATMs(r.latitude, r.longitude);
+  }
+
+  async function loadATMs(lat, lng) {
+    const res = await axios.get(
+      `http://YOUR_SERVER:3000/atms/nearby?lat=${lat}&lng=${lng}&radius=3000`
+    );
+    setAtms(res.data);
+  }
+
+  if (!region) return <ActivityIndicator style={{ flex: 1 }} />;
+
+  return (
+    <MapView style={styles.map} region={region}>
+      <Marker coordinate={region} title="أنت هنا" />
+      {atms.map(a => (
+        <Marker
+          key={a.id}
+          coordinate={{ latitude: a.lat, longitude: a.lng }}
+          title={a.name || "ATM"}
+          description={a.bank || ""}
+        />
+      ))}
+    </MapView>
+  );
+}
+
+const styles = StyleSheet.create({
+  map: { flex: 1 },
+});
+
+⚙️ ثانيًا — Backend Node.js
+إنشاء
+mkdir backend
+cd backend
+npm init -y
+npm install express axios pg cors
+
+backend/server.js
+const express = require("express");
+const axios = require("axios");
+const cors = require("cors");
+
+const app = express();
+app.use(cors());
+app.use(express.json());
+
+const OVERPASS = "https://overpass-api.de/api/interpreter";
+
+app.get("/atms/nearby", async (req, res) => {
+  const { lat, lng, radius = 3000 } = req.query;
+
+  const query = `
+    [out:json];
+    node["amenity"="atm"](around:${radius},${lat},${lng});
+    out;
+  `;
+
+  try {
+    const r = await axios.post(OVERPASS, query, {
+      headers: { "Content-Type": "text/plain" },
+    });
+
+    const atms = r.data.elements.map(e => ({
+      id: e.id,
+      lat: e.lat,
+      lng: e.lon,
+      name: e.tags?.name || null,
+      bank: e.tags?.operator || null,
+    }));
+
+    res.json(atms);
+  } catch (e) {
+    res.status(500).json({ error: "overpass_failed" });
+  }
+});
+
+app.post("/report", (req, res) => {
+  // MVP: لاحقًا نخزن في DB
+  console.log("REPORT", req.body);
+  res.json({ ok: true });
+});
+
+app.listen(3000, () => console.log("API running on :3000"));
+
+🗄️ ثالثًا — قاعدة البيانات (Schema MVP)
+PostgreSQL tables
+CREATE TABLE atm_reports (
+  id SERIAL PRIMARY KEY,
+  atm_id BIGINT,
+  status TEXT,
+  created_at TIMESTAMP DEFAULT NOW(),
+  device_hash TEXT
+);
+
+🔌 Endpoint التبليغ
+إضافة في server.js
+const { Pool } = require("pg");
+
+const db = new Pool({
+  connectionString: process.env.DB_URL
+});
+
+app.post("/report", async (req, res) => {
+  const { atm_id, status, device_hash } = req.body;
+
+  await db.query(
+    "INSERT INTO atm_reports(atm_id,status,device_hash) VALUES($1,$2,$3)",
+    [atm_id, status, device_hash]
+  );
+
+  res.json({ ok: true });
+});
+
+📱 شاشة التبليغ (زر سريع في الموبايل)
+مثال زر
+async function report(atmId, status) {
+  await axios.post("http://YOUR_SERVER:3000/report", {
+    atm_id: atmId,
+    status,
+    device_hash: "temp"
+  });
+}
+
+🧭 الواجهات في MVP
+موجود الآن
+
+✅ خريطة
+✅ أقرب ATM
+✅ markers
+
+تضيف سريعًا
+
+شاشة تفاصيل marker
+
+شاشة تبليغ (4 أزرار)
+
+قائمة مرتبة بالمسافة
+
+🧪 اختبار سريع
+تشغيل backend
+node server.js
+
+تشغيل الموبايل
+cd mobile
+npx expo start
+
+⚠️ تحسينات ضرورية بعد أول تشغيل
+
+لا تتجاهل هذه:
+
+cache نتائج overpass (حتى لا تُحظر)
+
+rate limit للبلاغات
+
+فلترة نقاط OSM الخاطئة
+
+fallback Google Places لاحقًا
+
+إضافة distance sorting في السيرفر
